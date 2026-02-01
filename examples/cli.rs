@@ -55,6 +55,7 @@ fn env(var_name: &str) -> Result<String> {
     })
 }
 
+#[expect(clippy::print_stdout, reason = "this is a cli")]
 fn main() -> Result {
     color_eyre::install()?;
     dotenv().context("Failed to load `.env` file. Please create it with the DOMAIN, USERNAME and PASSWORD variables.")?;
@@ -69,6 +70,11 @@ fn main() -> Result {
             })
         })
         .transpose()?;
-    let _server = EmailServer::new(&domain, &username, &password, port)?;
+    let mut server = EmailServer::new(&domain, &username, &password, port)?;
+    for mailbox_name in
+        server.list_mailboxes().context("Failed to list mailboxes")?
+    {
+        println!("{mailbox_name}");
+    }
     Ok(())
 }

@@ -47,24 +47,52 @@ use std::net::TcpStream;
 
 use native_tls::{TlsConnector, TlsStream};
 use proc_macros::doc_error;
+use utf7_imap::decode_utf7_imap;
 
 /// An [`imap::Session`] secured through TLS.
 type ImapSession = imap::Session<TlsStream<TcpStream>>;
 
 /// A server to connect and interact through IMAP with mailboxes.
-#[expect(dead_code, reason = "todo")]
 pub struct EmailServer {
     /// Underlying IMAP session of the server that is used for calls to the mailbox.
     session: ImapSession,
 }
 
 impl EmailServer {
+    /// Returns the list of the names of the mailboxes (i.e., folders) that exist for the current session.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// let mut server = e_mail::EmailServer::new("imap.gmail.com", "my.email@gmail.com", "sixteenletterkey",
+    /// None).unwrap();
+    /// let mailbox_names = server.list_mailboxes();
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// It returns an error if it failed to prompt the server for the list (internet error, etc.)
+    pub fn list_mailboxes(&mut self) -> Result<Vec<String>, imap::Error> {
+        Ok(self
+            .session
+            .list(None, Some("*"))?
+            .into_iter()
+            .map(|mailbox| decode_utf7_imap(mailbox.name().to_owned()))
+            .collect())
+    }
+
     /// Creates a new [`EmailServer`] with the given IMAP credentials.
     ///
     /// Their format is specific to each mailbox. For example, for _gmail_, you need an app.
     /// password, and the domain is `imap.gmail.com`.
     ///
     /// If `port` is `None`, it will default to `993`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// e_mail::EmailServer::new("imap.gmail.com", "my.email@gmail.com", "sixteenletterkey", None);
+    /// ```
     ///
     /// # Errors
     ///

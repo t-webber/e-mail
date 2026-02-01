@@ -15,6 +15,7 @@ imap = "2.4.1"
 native-tls = "0.2.14"
 thiserror = "2.0.18"
 proc_macros = { path = "./proc_macros" }
+utf7-imap = "0.3.2"
 
 [dev-dependencies]
 color-eyre = "0.6.5"
