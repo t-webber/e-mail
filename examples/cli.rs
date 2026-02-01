@@ -69,7 +69,6 @@ fn main() -> Result {
             })
         })
         .transpose()?;
-    let _server = EmailServer::new(&domain, &username, &password, port)
-        .context("Failed to connect")?;
+    let _server = EmailServer::new(&domain, &username, &password, port)?;
     Ok(())
 }
