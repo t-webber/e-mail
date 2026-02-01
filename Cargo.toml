@@ -2,6 +2,13 @@
 name = "e-mail"
 version = "0.1.0"
 edition = "2024"
+authors = ["Tom Webber <t.c.w.webber@gmail.com>"]
+description = "A simple wrapper around IMAP to simply fetch emails and related data without needing IMAP knowledge."
+keywords = ["email", "imap", "network"]
+categories = ["email"]
+license = "MIT or Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/t-webber/e-mail"
 
 [dependencies]
 
