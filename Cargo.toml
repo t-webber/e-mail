@@ -13,6 +13,7 @@ repository = "https://github.com/t-webber/e-mail"
 [dependencies]
 imap = "2.4.1"
 native-tls = "0.2.14"
+thiserror = "2.0.18"
 
 [dev-dependencies]
 color-eyre = "0.6.5"

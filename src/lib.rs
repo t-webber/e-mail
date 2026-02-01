@@ -37,6 +37,7 @@
     clippy::else_if_without_else,
     clippy::missing_inline_in_public_items,
     clippy::multiple_crate_versions,
+    clippy::error_impl_error,
     reason = "chosen style"
 )]
 #![expect(clippy::doc_include_without_cfg, reason = "see issue #13918")]
@@ -94,12 +95,20 @@ type Result<T = (), E = Error> = result::Result<T, E>;
 
 /// List of errors that can occur while using a [`EmailServer`]
 #[non_exhaustive]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Failed to establish the `imap` connection. Domain or port may be incorrect.
+    #[error(
+        "Failed to establish the `imap` connection. Domain or port may be incorrect."
+    )]
     ImapConnection(imap::Error),
     /// Failed to login with the `imap` client. Username or password may be incorrect.
+    #[error(
+        "Failed to login with the `imap` client. Username or password may be incorrect."
+    )]
     Login(imap::Error),
     /// Failed to establish the `native_tls` connection.
+    #[error("Failed to establish the `native_tls` connection.")]
     TlsConnection(native_tls::Error),
 }
 

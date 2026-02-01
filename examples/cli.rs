@@ -43,6 +43,7 @@ use std::env;
 
 use color_eyre::eyre::Context as _;
 use dotenv::dotenv;
+use e_mail::EmailServer;
 
 /// Custom Result for this example.
 type Result<T = ()> = color_eyre::Result<T>;
@@ -57,8 +58,18 @@ fn env(var_name: &str) -> Result<String> {
 fn main() -> Result {
     color_eyre::install()?;
     dotenv().context("Failed to load `.env` file. Please create it with the DOMAIN, USERNAME and PASSWORD variables.")?;
-    let _domain = env("DOMAIN");
-    let _username = env("USERNAME");
-    let _password = env("PASSWORD");
+    let domain = env("DOMAIN")?;
+    let username = env("USERNAME")?;
+    let password = env("PASSWORD")?;
+    let port = env::var("PORT")
+        .ok()
+        .map(|port| {
+            port.parse().with_context(|| {
+                format!("Failed to parse {port} into a port number")
+            })
+        })
+        .transpose()?;
+    let _server = EmailServer::new(&domain, &username, &password, port)
+        .context("Failed to connect")?;
     Ok(())
 }
