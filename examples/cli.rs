@@ -112,15 +112,16 @@ fn main() -> Result {
     for next_line in stdin().lines() {
         let line = next_line.context("Failed to read input")?;
 
-        if line == "list_mailboxes" {
-            let mailboxes =
-                server.list_mailboxes().context("Failed to list mailboxes")?;
-            for mailbox_name in mailboxes {
-                println!("{mailbox_name}");
+        match line.as_str() {
+            "list_mailboxes" => {
+                for mailbox_name in server.list_mailboxes() {
+                    println!("{mailbox_name}");
+                }
             }
-        } else {
-            println!("Invalid command {line}");
+            "refresh" => server.refresh()?,
+            _ => println!("Invalid command {line}"),
         }
+
         prompt()?;
     }
 

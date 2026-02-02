@@ -54,6 +54,8 @@ type ImapSession = imap::Session<TlsStream<TcpStream>>;
 
 /// A server to connect and interact through IMAP with mailboxes.
 pub struct EmailServer {
+    /// Caches the list of mailboxes to not refetch everytime.
+    mailboxes: Vec<String>,
     /// Underlying IMAP session of the server that is used for calls to the mailbox.
     session: ImapSession,
 }
@@ -66,19 +68,17 @@ impl EmailServer {
     /// ```no_run
     /// let mut server = e_mail::EmailServer::new("imap.gmail.com", "my.email@gmail.com", "sixteenletterkey",
     /// None).unwrap();
-    /// let mailbox_names = server.list_mailboxes();
+    /// for mailbox_name in server.list_mailboxes() {
+    ///    println!("{mailbox_name}");
+    /// }
     /// ```
     ///
     /// # Errors
     ///
     /// It returns an error if it failed to prompt the server for the list (internet error, etc.)
-    pub fn list_mailboxes(&mut self) -> Result<Vec<String>, imap::Error> {
-        Ok(self
-            .session
-            .list(None, Some("*"))?
-            .into_iter()
-            .map(|mailbox| decode_utf7_imap(mailbox.name().to_owned()))
-            .collect())
+    #[must_use]
+    pub fn list_mailboxes(&self) -> &[String] {
+        &self.mailboxes
     }
 
     /// Creates a new [`EmailServer`] with the given IMAP credentials.
@@ -109,12 +109,24 @@ impl EmailServer {
         let client = imap::connect(addr, domain, &ssl_connector)
             .map_err(Error::ImapConnection)?;
 
-        let session = client
+        let mut session = client
             .login(username, password)
             .map_err(first)
             .map_err(Error::Login)?;
 
-        Ok(Self { session })
+        let mailboxes = list_mailboxes(&mut session)?;
+
+        Ok(Self { mailboxes, session })
+    }
+
+    /// Refetches everything to make sure all data is up-to-date.
+    ///
+    /// # Errors
+    ///
+    /// Will fail if network is down.
+    pub fn refresh(&mut self) -> Result {
+        self.mailboxes = list_mailboxes(&mut self.session)?;
+        Ok(())
     }
 }
 
@@ -126,11 +138,13 @@ type Result<T = (), E = Error> = result::Result<T, E>;
 #[doc_error]
 pub enum Error {
     #[error(
-        "Failed to establish the `imap` connection. Domain or port may be incorrect."
+        "Failed to establish the `imap` connection. Check domain, port and network."
     )]
     ImapConnection(#[source] imap::Error),
+    #[error("Failed to list mailboxes.")]
+    ListError(#[source] imap::Error),
     #[error(
-        "Failed to login with the `imap` client. Username or password may be incorrect."
+        "Failed to login with the `imap` client. Check username and password."
     )]
     Login(#[source] imap::Error),
     #[error("Failed to establish the `native_tls` connection.")]
@@ -140,4 +154,17 @@ pub enum Error {
 /// Projects a pair on it's first axis.
 fn first<T, U>(x: (T, U)) -> T {
     x.0
+}
+
+/// Lists all the mailboxes of an [`ImapSession`]
+fn list_mailboxes(session: &mut ImapSession) -> Result<Vec<String>> {
+    Ok(session
+        .list(None, Some("*"))
+        .map_err(Error::ListError)?
+        .into_iter()
+        .filter(|mailbox| {
+            session.select(mailbox.name()).and_then(|_| session.close()).is_ok()
+        })
+        .map(|mailbox| decode_utf7_imap(mailbox.name().to_owned()))
+        .collect())
 }
