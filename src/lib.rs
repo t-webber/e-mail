@@ -43,11 +43,27 @@
 #![expect(clippy::doc_include_without_cfg, reason = "see issue #13918")]
 
 use core::result;
+use std::collections::{BTreeMap, HashMap};
 use std::net::TcpStream;
 
 use native_tls::{TlsConnector, TlsStream};
 use proc_macros::doc_error;
 use utf7_imap::decode_utf7_imap;
+
+/// Convient macro to create an IMAP error closure with a formatted message.
+///
+/// # Examples
+///
+/// ```
+/// let formatted = "data";
+/// let e: Result<(), imap::Error>;
+/// e.map_err(imap_err!("Some {formatted} string"));
+/// ```
+macro_rules! imap_err {
+    ($($arg:tt)*) => {
+        |err| Error::ImapError(format!($($arg),*), err)
+    };
+}
 
 /// An [`imap::Session`] secured through TLS.
 type ImapSession = imap::Session<TlsStream<TcpStream>>;
@@ -55,7 +71,9 @@ type ImapSession = imap::Session<TlsStream<TcpStream>>;
 /// A server to connect and interact through IMAP with mailboxes.
 pub struct EmailServer {
     /// Caches the list of mailboxes to not refetch everytime.
-    mailboxes: Vec<String>,
+    mailbox_names: Vec<String>,
+    /// Caches the data of each mailbox
+    mailboxes: HashMap<String, MailboxData>,
     /// Underlying IMAP session of the server that is used for calls to the mailbox.
     session: ImapSession,
 }
@@ -78,7 +96,7 @@ impl EmailServer {
     /// It returns an error if it failed to prompt the server for the list (internet error, etc.)
     #[must_use]
     pub fn list_mailboxes(&self) -> &[String] {
-        &self.mailboxes
+        &self.mailbox_names
     }
 
     /// Creates a new [`EmailServer`] with the given IMAP credentials.
@@ -109,14 +127,15 @@ impl EmailServer {
         let client = imap::connect(addr, domain, &ssl_connector)
             .map_err(Error::ImapConnection)?;
 
-        let mut session = client
+        let session = client
             .login(username, password)
             .map_err(first)
             .map_err(Error::Login)?;
 
-        let mailboxes = list_mailboxes(&mut session)?;
-
-        Ok(Self { mailboxes, session })
+        let mut this =
+            Self { mailboxes: HashMap::new(), mailbox_names: vec![], session };
+        this.refresh()?;
+        Ok(this)
     }
 
     /// Refetches everything to make sure all data is up-to-date.
@@ -125,7 +144,51 @@ impl EmailServer {
     ///
     /// Will fail if network is down.
     pub fn refresh(&mut self) -> Result {
-        self.mailboxes = list_mailboxes(&mut self.session)?;
+        self.mailbox_names = list_mailboxes(&mut self.session)?;
+        for mailbox_name in &self.mailbox_names {
+            self.session
+                .select(mailbox_name)
+                .map_err(imap_err!("select {mailbox_name}"))?;
+            if let Some(mailbox) = self.mailboxes.get_mut(mailbox_name) {
+                mailbox.refresh(&mut self.session)?;
+            } else {
+                let mailbox_data = MailboxData::new(&mut self.session)?;
+                self.mailboxes.insert(mailbox_name.to_owned(), mailbox_data);
+            }
+            self.session.close().map_err(imap_err!("close {mailbox_name}"))?;
+        }
+        Ok(())
+    }
+}
+
+/// All data of an email
+struct EmailData;
+
+/// All data of a mailbox, cached here.
+struct MailboxData(BTreeMap<u32, EmailData>);
+
+impl MailboxData {
+    /// Populates the data of a new Mailbox
+    fn new(session: &mut ImapSession) -> Result<Self> {
+        Ok(Self(
+            session
+                .uid_search("ALL")
+                .map_err(imap_err!("uid_search(ALL)"))?
+                .into_iter()
+                .map(|uid| (uid, EmailData))
+                .collect(),
+        ))
+    }
+
+    /// Re-populates the data of a mailbox with the additional data received.
+    fn refresh(&mut self, session: &mut ImapSession) -> Result {
+        session
+            .uid_search("ALL")
+            .map_err(imap_err!("uid_search(ALL)"))?
+            .into_iter()
+            .for_each(|uid| {
+                self.0.entry(uid).or_insert_with(|| EmailData);
+            });
         Ok(())
     }
 }
@@ -137,14 +200,12 @@ type Result<T = (), E = Error> = result::Result<T, E>;
 #[non_exhaustive]
 #[doc_error]
 pub enum Error {
-    #[error(
-        "Failed to establish the `imap` connection. Check domain, port and network."
-    )]
+    #[error("Failed to connect with IMAP. Check domain, port and network.")]
     ImapConnection(#[source] imap::Error),
-    #[error("Failed to list mailboxes.")]
-    ListError(#[source] imap::Error),
+    #[error("Failed to run '{0}' on the IMAP session.")]
+    ImapError(String, #[source] imap::Error),
     #[error(
-        "Failed to login with the `imap` client. Check username and password."
+        "Failed to login with the IMAP client. Check username and password."
     )]
     Login(#[source] imap::Error),
     #[error("Failed to establish the `native_tls` connection.")]
@@ -160,7 +221,7 @@ fn first<T, U>(x: (T, U)) -> T {
 fn list_mailboxes(session: &mut ImapSession) -> Result<Vec<String>> {
     Ok(session
         .list(None, Some("*"))
-        .map_err(Error::ListError)?
+        .map_err(imap_err!("list(None,*)"))?
         .into_iter()
         .filter(|mailbox| {
             session.select(mailbox.name()).and_then(|_| session.close()).is_ok()
