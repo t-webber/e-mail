@@ -38,27 +38,49 @@
     clippy::else_if_without_else,
     reason = "chosen style"
 )]
+#![expect(clippy::print_stdout, clippy::print_stderr, reason = "this is a cli")]
 
-use std::env;
+use std::env::{self, VarError};
+use std::io::{Write as _, stdin, stdout};
+use std::path::PathBuf;
 
-use color_eyre::eyre::Context as _;
+use color_eyre::eyre::{Context as _, ContextCompat as _};
 use dotenv::dotenv;
 use e_mail::EmailServer;
 
 /// Custom Result for this example.
 type Result<T = ()> = color_eyre::Result<T>;
 
-/// Loads an environment variable with a nicer error if not present.
+/// Loads an environment variable if present, otherwise prompts the user for it.
 fn env(var_name: &str) -> Result<String> {
-    env::var(var_name).with_context(|| {
-        format!("Failed to load {var_name} environment variable. Consider adding it to the `.env` file.")
-    })
+    match env::var(var_name) {
+        Ok(var) => return Ok(var),
+        Err(VarError::NotUnicode(_)) => {
+            eprintln!(
+                "{var_name} was found but contains unsupported characters"
+            );
+        }
+        Err(VarError::NotPresent) => (),
+    }
+    print!("Enter {var_name}:");
+    stdout().flush()?;
+    let value = stdin().lines().next().context("Failed to read stdin")??;
+    Ok(value)
 }
 
-#[expect(clippy::print_stdout, reason = "this is a cli")]
-fn main() -> Result {
-    color_eyre::install()?;
-    dotenv().context("Failed to load `.env` file. Please create it with the DOMAIN, USERNAME and PASSWORD variables.")?;
+/// Loads the .env file if it exists.
+fn load_env() -> Result {
+    let env_file = PathBuf::from(".env");
+    if env_file.is_file() {
+        dotenv().context("Failed to load `.env` file")?;
+    } else if env_file.exists() {
+        eprintln!(".env exists but is not a file, skipping.");
+    }
+    Ok(())
+}
+
+/// Determines the credentials and uses them to connect an [`EmailServer`].
+fn login_server() -> Result<EmailServer> {
     let domain = env("DOMAIN")?;
     let username = env("USERNAME")?;
     let password = env("PASSWORD")?;
@@ -70,11 +92,37 @@ fn main() -> Result {
             })
         })
         .transpose()?;
-    let mut server = EmailServer::new(&domain, &username, &password, port)?;
-    for mailbox_name in
-        server.list_mailboxes().context("Failed to list mailboxes")?
-    {
-        println!("{mailbox_name}");
+
+    Ok(EmailServer::new(&domain, &username, &password, port)?)
+}
+
+/// Writes a prompt
+fn prompt() -> Result {
+    print!("\x1b[33m> \x1b[0m");
+    stdout().flush()?;
+    Ok(())
+}
+
+fn main() -> Result {
+    color_eyre::install()?;
+    load_env()?;
+    let mut server = login_server()?;
+
+    prompt()?;
+    for next_line in stdin().lines() {
+        let line = next_line.context("Failed to read input")?;
+
+        if line == "list_mailboxes" {
+            let mailboxes =
+                server.list_mailboxes().context("Failed to list mailboxes")?;
+            for mailbox_name in mailboxes {
+                println!("{mailbox_name}");
+            }
+        } else {
+            println!("Invalid command {line}");
+        }
+        prompt()?;
     }
+
     Ok(())
 }
