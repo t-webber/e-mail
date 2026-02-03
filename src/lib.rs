@@ -42,13 +42,18 @@
 )]
 #![expect(clippy::doc_include_without_cfg, reason = "see issue #13918")]
 
+extern crate alloc;
+use alloc::collections::BTreeMap;
+use alloc::collections::btree_map;
+use chrono::{DateTime, FixedOffset};
 use core::result;
-use std::collections::{BTreeMap, HashMap};
-use std::net::TcpStream;
-
+use mailparse::{MailHeaderMap as _, MailParseError, ParsedMail, parse_mail};
 use native_tls::{TlsConnector, TlsStream};
 use proc_macros::doc_error;
+use std::collections::HashMap;
+use std::net::TcpStream;
 use utf7_imap::decode_utf7_imap;
+use utf7_imap::encode_utf7_imap;
 
 /// Convient macro to create an IMAP error closure with a formatted message.
 ///
@@ -69,6 +74,7 @@ macro_rules! imap_err {
 type ImapSession = imap::Session<TlsStream<TcpStream>>;
 
 /// A server to connect and interact through IMAP with mailboxes.
+#[derive(Debug)]
 pub struct EmailServer {
     /// Caches the list of mailboxes to not refetch everytime.
     mailbox_names: Vec<String>,
@@ -147,7 +153,7 @@ impl EmailServer {
         self.mailbox_names = list_mailboxes(&mut self.session)?;
         for mailbox_name in &self.mailbox_names {
             self.session
-                .select(mailbox_name)
+                .select(encode_utf7_imap(mailbox_name.to_owned()))
                 .map_err(imap_err!("select {mailbox_name}"))?;
             if let Some(mailbox) = self.mailboxes.get_mut(mailbox_name) {
                 mailbox.refresh(&mut self.session)?;
@@ -162,9 +168,76 @@ impl EmailServer {
 }
 
 /// All data of an email
-struct EmailData;
+#[derive(Debug)]
+pub struct EmailData {
+    /// List of people in hidden copy (blind carbon copy) if available (in the format of an email or 'Name <email>').
+    ///
+    /// For sent emails, the bcc field is available but not for received emails.
+    bcc: Vec<String>,
+    /// List of people in copy (carbon copy) of the email (in the format of an email or 'Name <email>').
+    cc: Vec<String>,
+    /// Date and time at which the email was sent/created.
+    datetime: DateTime<FixedOffset>,
+    /// List of people of the 'from' field (in the format of an email or 'Name <email>').
+    from: Vec<String>,
+    /// Subject of the email, if present, otherwise an empty string.
+    subject: String,
+    /// List of people of the 'to' field (in the format of an email or 'Name <email>').
+    to: Vec<String>,
+}
+
+impl EmailData {
+    /// Fetches the email data corresponding to an uid and returns the [`EmailData`] that goes with
+    /// it.
+    ///
+    /// # Errors
+    ///
+    /// For connection errors and if the uid doesn't exist in the current mailbox.
+    fn fetch(uid: u32, session: &mut ImapSession) -> Result<Self> {
+        let messages = session
+            .uid_fetch(uid.to_string(), "RFC822")
+            .map_err(imap_err!("uid_fetch({uid}, RFC822"))?;
+        let message = messages.iter().next().ok_or(EmailDataError::NotFound)?;
+        let raw = message.body().ok_or(EmailDataError::MissingBody)?;
+        let parsed = parse_mail(raw).map_err(EmailDataError::Parsing)?;
+
+        let from = split_and_parse_header(&parsed, "From");
+        let to = split_and_parse_header(&parsed, "To");
+        let cc = split_and_parse_header(&parsed, "Cc");
+        let bcc = split_and_parse_header(&parsed, "Bcc");
+        let subject =
+            parsed.headers.get_first_value("Subject").unwrap_or_default();
+
+        let datetime = DateTime::parse_from_rfc2822(
+            &parsed
+                .headers
+                .get_first_value("Date")
+                .ok_or(EmailDataError::MissingDate)?,
+        )
+        .map_err(EmailDataError::from)?;
+
+        Ok(Self { bcc, cc, datetime, from, subject, to })
+    }
+}
+
+/// Errors that occur while fetch and parsing a specific email.
+#[doc_error]
+#[non_exhaustive]
+pub enum EmailDataError {
+    #[error("Date field is present but in an invalid format")]
+    InvalidDate(#[from] chrono::ParseError),
+    #[error("Missing email body")]
+    MissingBody,
+    #[error("Missing compulsory Date field")]
+    MissingDate,
+    #[error("No email found for this uid")]
+    NotFound,
+    #[error("Failed to parse email body")]
+    Parsing(#[from] MailParseError),
+}
 
 /// All data of a mailbox, cached here.
+#[derive(Debug)]
 struct MailboxData(BTreeMap<u32, EmailData>);
 
 impl MailboxData {
@@ -175,8 +248,10 @@ impl MailboxData {
                 .uid_search("ALL")
                 .map_err(imap_err!("uid_search(ALL)"))?
                 .into_iter()
-                .map(|uid| (uid, EmailData))
-                .collect(),
+                .map(|uid| {
+                    EmailData::fetch(uid, session).map(|data| (uid, data))
+                })
+                .collect::<Result<BTreeMap<_, _>>>()?,
         ))
     }
 
@@ -186,9 +261,13 @@ impl MailboxData {
             .uid_search("ALL")
             .map_err(imap_err!("uid_search(ALL)"))?
             .into_iter()
-            .for_each(|uid| {
-                self.0.entry(uid).or_insert_with(|| EmailData);
-            });
+            .try_for_each(|uid| {
+                if let btree_map::Entry::Vacant(entry) = self.0.entry(uid) {
+                    entry.insert(EmailData::fetch(uid, session)?);
+                }
+                Ok::<_, Error>(())
+            })?;
+
         Ok(())
     }
 }
@@ -204,6 +283,8 @@ pub enum Error {
     ImapConnection(#[source] imap::Error),
     #[error("Failed to run '{0}' on the IMAP session.")]
     ImapError(String, #[source] imap::Error),
+    #[error("Failed to parse email")]
+    InvalidEmail(#[from] EmailDataError),
     #[error(
         "Failed to login with the IMAP client. Check username and password."
     )]
@@ -215,6 +296,17 @@ pub enum Error {
 /// Projects a pair on it's first axis.
 fn first<T, U>(x: (T, U)) -> T {
     x.0
+}
+
+/// Reads an entry of the email head and splits it on comma.
+fn split_and_parse_header(email: &ParsedMail<'_>, name: &str) -> Vec<String> {
+    email
+        .headers
+        .get_first_value(name)
+        .map(|values| {
+            values.split(',').map(|value| value.trim().to_owned()).collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Lists all the mailboxes of an [`ImapSession`]

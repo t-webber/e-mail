@@ -16,6 +16,8 @@ native-tls = "0.2.14"
 thiserror = "2.0.18"
 proc_macros = { path = "./proc_macros" }
 utf7-imap = "0.3.2"
+chrono = { version = "0.4.43", default-features = false }
+mailparse = { version = "0.16.1" }
 
 [dev-dependencies]
 color-eyre = "0.6.5"
